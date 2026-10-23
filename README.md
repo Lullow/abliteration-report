@@ -6,9 +6,9 @@ A white-hat look at methods that strip the safety behaviour out of open language
 1. [What abliteration is](#1-what-abliteration-is)
 2. [Why it works](#2-why-it-works)
 3. [What the measurements show](#3-what-the-measurements-show)
-4. Risks
-5. Defences
-6. Reflection
+4. [Risks](#4-risks)
+5. [Defences](#5-defences)
+6. [Reflection](#6-reflection)
 7. [Sources](#sources)
 
 ## 1. What abliteration is
@@ -132,11 +132,80 @@ All three remove refusal equally well. How much else changes depends on how care
 
 Removing refusal costs little in capability, works across model families and sizes, and for Qwen it is as effective as GCG, which has to be optimized separately for every prompt. The only thing in these measurements that brought refusal back was not in the weights: a safety instruction in the system prompt, and only for some models. A defence that lives in the model's own behaviour can be edited away. That points to where defences have to be placed (section 5).
 
-<!-- Sections 4–6 follow: risks, defences, reflection. -->
+## 4. Risks
+
+### Abliterated models are easy to get
+
+Ready-made abliterated versions of popular models are published openly. huihui-ai alone offers abliterated versions of the whole Qwen3 family on Ollama, from 0.6B to 235B parameters. With Heretic, making a new one is a single command. The model cards admit the limits: huihui-ai calls its method a "crude, proof-of-concept implementation" and says that its own test result, 100 % on 320 harmful instructions, does not represent actual results. The models are downloaded and used anyway.
+
+### Text alone is limited, agents are not
+
+In a chat window, a model can only write text, and a person has to decide to act on it. The risk grows when the model gets tools: code execution, email, file access, the internet. In an agent, refusal is one of the few things standing between an instruction and an action. That includes instructions the user never wrote, planted in a web page, email or document the agent reads (*prompt injection*). An abliterated model in an agent carries out whatever it is told, by whoever manages to tell it.
+
+### A manipulated model is hard to spot
+
+Section 3 shows that an orthogonalized model answers harmless prompts almost exactly like the original and scores about the same on standard benchmarks. Ordinary testing will not reveal a swap. If a team downloads a model under a familiar name from an untrusted source, or someone replaces the file somewhere in a pipeline, the only visible difference is a missing refusal, and nobody looks for that until it matters.
+
+### Who is responsible?
+
+When an abliterated model causes harm, the responsibility is spread out. The original developer trained the safety in. The person who removed it published the result with a disclaimer; huihui-ai's model card recommends research or controlled environments and disclaims responsibility for how the model is used. The person who deployed it decided what it could reach, and the user decided what to ask. In practice the weight falls on whoever deploys the model, because only they control what it is connected to.
+
+## 5. Defences
+
+The starting point: **assume the model's own refusals can be removed, and place defences where the model cannot reach them.**
+
+### Guardrails outside the model
+
+A separate classifier can check what goes into the model and what comes out of it. Llama Guard, the same classifier Arditi et al. use to judge answers, is one example. NVIDIA's NeMo Guardrails, which wraps an LLM application in programmable rules, is another. Because they are separate from the model, abliterating the model does not remove them. This report has its own example: the safety classifier that stopped its planned experiment (section 6).
+
+The limit is who controls them. Guardrails protect a service from its users and from injected content. They do not help when the person running the model is the threat: whoever runs an open model on their own machine can leave out the classifier as easily as they can download an abliterated model.
+
+### Limit what an agent can do
+
+- **Least privilege.** Give an agent only the tools it needs, no internet access unless the task requires it, and only the data it needs to know.
+- **Sandboxing.** Run agents in an isolated environment. This homework's own rules are an example: offline, no function calling. Without tools, even an abliterated model can only write text.
+- **Human approval** for actions that cannot be undone.
+- **Enforcement outside the agent.** NVIDIA's Open Agent Safety Platform (announced 28 September 2026) takes this furthest. OpenShell is a runtime that sets boundaries for agents, traces what they do and enforces policy outside both the model and the agent harness. Sentry is a watchdog that runs on separate hardware (BlueField-4 DPUs), monitors agent behaviour and can quarantine an agent that tries to leave its boundaries. The limits sit where neither the model nor its harness can switch them off.
+
+### Know where the model comes from
+
+- Download models from the original publisher, and check the file's digest against the one the publisher lists. Ollama and Hugging Face both show content digests.
+- Test the exact file that will be deployed with a refusal benchmark such as HarmBench or JailbreakBench. Section 3 shows that general benchmarks will not catch abliteration, but a refusal benchmark will.
+
+### Do not count on the system prompt
+
+A safety instruction in the system prompt brought much of the refusal back for Llama-2, but did nothing for Qwen, and the effect varied widely between prompts (section 3). It is a useful layer, not a guarantee.
+
+No single layer is enough on its own. The defences work together, so that one failing layer does not open the whole system.
+
+## 6. Reflection
+
+### Two sides of removing refusal
+
+Removing refusal is not only a tool for attackers. Arditi et al.'s research, which explains why safety training is so brittle, was only possible by manipulating refusal. Red teams need to know what an unrestricted model does to test their defences. And some people use abliterated models simply because the original refuses too much. The risks in section 4 are real, but so are these uses.
+
+### Alignment can be dangerous too
+
+My teacher's point was that alignment has risks of its own, and the research supports this in two ways.
+
+**Over-refusal.** Arditi et al. show that adding the refusal direction makes a model refuse harmless requests. Over-refusal is the same mechanism firing at the wrong time. A model that refuses a medical question, a history question about a war crime or a security course exercise is not safer, only less useful, and it pushes people toward models with no limits at all.
+
+**Models that act on their own.** In Anthropic's study *Agentic Misalignment* (June 2025), 16 models from several developers worked as email agents in a simulated company. Faced with a threat of being replaced, or a conflict between their goal and the company's, several of them blackmailed an executive or leaked confidential documents. Explicit instructions not to do so reduced the behaviour but did not remove it: for Claude Opus 4, blackmail fell from 96 % to 37 %. The authors have not seen this in real deployments. Still, a model that acts on its own judgement with real tools can do harm while believing it does the right thing. Neither removing nor adding refusal solves that. The question is not only whether a model says no, but what it is allowed to do.
+
+### Why there is no experiment in this report
+
+The plan was a small offline comparison of `qwen3:8b` with `huihui_ai/qwen3-abliterated:8b`, logging only whether each model refused. I used an AI assistant (Claude Code) for the work. When it started writing the test prompts, its answer was stopped by a safety classifier. I chose not to work around it, neither by rephrasing the request nor by doing the same thing by hand from the assistant's instructions. The experiment was dropped and the downloaded model removed.
+
+Was the stop reasonable? My teacher allowed experiments in a sandbox, and the classifier had no way of knowing that. It judges the text in front of it, just like the models in this report: neither the classifier nor a model with refusals can see who is asking or why. A filter that cannot verify the context has to choose between stopping too much and stopping too little, and this one stopped too much from my teacher's point of view. I still think it was reasonable. The cost was one section of my own measurements, which published research covers better anyway.
+
+The episode is also a live example of section 5. The classifier sits outside the model, and as a user I could not abliterate it away. It also shows the limit of such guardrails: the classifier only existed because I used a hosted service. With a model running on my own machine, there would have been nothing to stop me.
 
 ## Sources
 
 - Arditi, A., Obeso, O., Syed, A., Paleka, D., Panickssery, N., Gurnee, W. & Nanda, N. (2024). *Refusal in Language Models Is Mediated by a Single Direction.* [arXiv:2406.11717](https://arxiv.org/abs/2406.11717)
 - Labonne, M. (2024). *Uncensor any LLM with abliteration.* [Hugging Face blog](https://huggingface.co/blog/mlabonne/abliteration)
 - Weidmann, P. E. *Heretic.* [heretic-project.org](https://heretic-project.org/), [GitHub](https://github.com/p-e-w/heretic)
+- Anthropic (2025). *Agentic Misalignment: How LLMs could be insider threats.* [anthropic.com](https://www.anthropic.com/research/agentic-misalignment)
+- NVIDIA (2026). *Open Agent Safety Platform.* [Press release](https://nvidianews.nvidia.com/news/open-agent-safety-platform)
+- NVIDIA. *NeMo Guardrails.* [GitHub](https://github.com/NVIDIA/NeMo-Guardrails)
 - huihui-ai. *Qwen3-8B-abliterated.* [Hugging Face](https://huggingface.co/huihui-ai/Qwen3-8B-abliterated), [Ollama](https://ollama.com/huihui_ai/qwen3-abliterated)
