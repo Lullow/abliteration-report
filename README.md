@@ -1,11 +1,11 @@
 # The Dark Side: How Abliteration Removes Refusal from Language Models
 
-A white-hat look at methods that strip the safety behaviour out of open language models: abliteration, "uncensoring" and the tool Heretic. The goal is to understand what we need to protect against. The report explains how abliteration works and why it works so well, and it compares `qwen3:8b` with an abliterated version of the same base model in a small offline experiment.
+A white-hat look at methods that strip the safety behaviour out of open language models: abliteration, "uncensoring" and the tool Heretic. The goal is to understand what we need to protect against. The report explains how abliteration works and why it works so well, and it summarizes what published measurements show about its effect.
 
 ## Contents
 1. [What abliteration is](#1-what-abliteration-is)
 2. [Why it works](#2-why-it-works)
-3. The experiment
+3. [What the measurements show](#3-what-the-measurements-show)
 4. Risks
 5. Defences
 6. Reflection
@@ -54,7 +54,7 @@ Instead of hooking into the model every time it runs, the direction can be remov
 
 $$W' = W - \hat{r}\hat{r}^{\top}W$$
 
-After this, no part of the model can write anything along $\hat{r}$. Arditi et al. show that this is equivalent to directional ablation at every layer. The result is an ordinary model file that can be shared and run like any other, which is how models such as `huihui_ai/qwen3-abliterated:8b` (used in the experiment below) are distributed.
+After this, no part of the model can write anything along $\hat{r}$. Arditi et al. show that this is equivalent to directional ablation at every layer. The result is an ordinary model file that can be shared and run like any other, which is how models such as `huihui_ai/qwen3-abliterated:8b` are distributed.
 
 ### Heretic: abliteration on autopilot
 
@@ -66,11 +66,73 @@ After this, no part of the model can write anything along $\hat{r}$. Arditi et a
 
 **Safety fine-tuning adds a gate, not a gap in knowledge.** The knowledge needed to answer is still in the model. Refusal works like a gate in front of it, and that gate hangs on one direction. Arditi et al. also find the direction in base models before any chat fine-tuning, which suggests that safety training hooks into a representation that already exists rather than building a new one. In their words, the findings "underscore the brittleness of current safety fine-tuning methods".
 
-**The rest of the model mostly survives.** On MMLU, ARC and GSM8K (standard tests of knowledge, reasoning and arithmetic), the orthogonalized models score about the same as the originals, within the 99 % confidence intervals for all models except Qwen 7B and Yi 34B. TruthfulQA drops consistently. Labonne saw benchmark scores fall on his abliterated model and recovered most of the loss with further fine-tuning (DPO). Heretic's two objectives exist for the same reason: removing refusal is easy, and the hard part is to do it without damaging the rest.
+**The rest of the model mostly survives.** Because the edit touches only one direction, standard tests of knowledge, reasoning and arithmetic barely move (numbers in [section 3](#what-the-model-loses)). Removing refusal is easy; the hard part is doing it without damaging the rest, which is why Labonne repaired his model with further fine-tuning (DPO) and why Heretic optimizes for both.
 
 **It needs the weights, and nothing else.** Abliteration is a *white-box* attack: it requires access to the model's weights, a few hundred prompts and a GPU that can run the model. Models behind an API cannot be abliterated this way. Every open-weight model can, which is why any safety argument for an open model cannot rest on its refusals alone.
 
-<!-- Sections 3–6 follow: experiment, risks, defences, reflection. -->
+## 3. What the measurements show
+
+This section collects published measurements. An experiment of our own was planned but not carried out; section 6 explains why. All numbers below come from Arditi et al. (2024) unless stated otherwise.
+
+### How refusal is measured
+
+Arditi et al. score every answer in two ways:
+
+- **Refusal score:** 1 if the answer contains a typical refusal phrase such as "I'm sorry" or "As an AI", otherwise 0.
+- **Safety score:** whether a separate classifier model, Llama Guard 2, labels the answer as safe or unsafe.
+
+Neither is enough on its own. An answer can avoid every refusal phrase and still contain nothing harmful, and an answer can open with an apology and then comply anyway. The test sets are 100 harmful instructions from JailbreakBench (10 categories), 100 harmless instructions from Alpaca, and the 159 standard behaviours of HarmBench. HarmBench reports an *attack success rate* (ASR): the share of prompts for which its own classifier judges the answer harmful.
+
+### Removing and adding the direction
+
+- **Ablation removes refusal.** With the direction ablated, refusal falls and unsafe answers rise in all 13 models.
+- **Addition creates refusal.** With the direction added, the models start refusing harmless requests.
+- **The edit removes the decision, not the words.** Asked directly, the orthogonalized model can still write refusal phrases, so the edit is not just a filter on certain tokens.
+- **Harmless behaviour is unchanged.** On harmless instructions the orthogonalized model answers almost exactly like the original, often word for word.
+
+### Compared with other jailbreaks
+
+On HarmBench, weight orthogonalization ("Ortho") is compared with a direct request without any attack, and with or without the model's default system prompt:
+
+| Model | Direct request, no attack | Ortho, default system prompt | Ortho, no system prompt |
+|---|---|---|---|
+| Llama-2 7B | 0.0 % | 22.6 % | 79.9 % |
+| Llama-2 13B | 0.5 % | 6.9 % | 61.0 % |
+| Llama-2 70B | 0.0 % | 4.4 % | 62.9 % |
+
+For the Qwen chat models (7B, 14B and 72B), Ortho reaches an ASR of about 75–84 % with or without the system prompt, against 7–10 % for a direct request. For Qwen it is on par with GCG, an attack that optimizes a separate adversarial suffix for every single prompt.
+
+For Llama-2 the system prompt matters a great deal. Its default system prompt explicitly tells the model to avoid harmful content, and with it in place much of the refusal comes back. The effect depends on the model, though. Qwen's default system prompt has no safety instructions, but giving Qwen the Llama-2 prompt made no significant difference either. Across 12 different system prompts, Llama-2 7B's ASR varied widely (mean 30.0 %, standard deviation 23.3 %), while Qwen 7B stayed high and stable (mean 76.7 %, standard deviation 5.9 %). Arditi et al. suggest that Llama-2 simply responds more strongly to system-level instructions, and leave a closer study to future work.
+
+### What the model loses
+
+Standard benchmarks barely move. A selection (original → orthogonalized, accuracy in %):
+
+| Model | MMLU | ARC | GSM8K | TruthfulQA |
+|---|---|---|---|---|
+| Llama-3 8B | 65.8 → 65.0 | 62.4 → 62.3 | 75.9 → 74.3 | 51.7 → 48.3 |
+| Llama-3 70B | 79.9 → 79.8 | 71.8 → 71.5 | 91.2 → 90.8 | 61.8 → 59.5 |
+| Qwen 7B | 56.8 → 54.8 | 51.7 → 52.0 | 48.1 → 41.8 | 51.6 → 47.9 |
+| Qwen 72B | 77.2 → 76.5 | 67.6 → 67.2 | 75.5 → 76.3 | 56.4 → 55.0 |
+
+Qwen 7B is the clearest exception, with significant drops on MMLU and GSM8K. TruthfulQA falls for every model, by 1–6 points. Arditi et al. note that the dataset has categories close to refusal territory, and that earlier work saw the same drop when safety fine-tuning was removed.
+
+Heretic's author measures the damage differently, as KL divergence from the original model on harmless prompts (`gemma-3-12b-it`):
+
+| Model | Refusals on harmful prompts | KL divergence |
+|---|---|---|
+| Original | 97/100 | 0 |
+| mlabonne abliteration | 3/100 | 1.04 |
+| huihui-ai abliteration | 3/100 | 0.45 |
+| Heretic | 3/100 | 0.16 |
+
+All three remove refusal equally well. How much else changes depends on how carefully the ablation is tuned.
+
+### In short
+
+Removing refusal costs little in capability, works across model families and sizes, and for Qwen it is as effective as GCG, which has to be optimized separately for every prompt. The only thing in these measurements that brought refusal back was not in the weights: a safety instruction in the system prompt, and only for some models. A defence that lives in the model's own behaviour can be edited away. That points to where defences have to be placed (section 5).
+
+<!-- Sections 4–6 follow: risks, defences, reflection. -->
 
 ## Sources
 
